@@ -8,7 +8,8 @@ def test_available_cameras(max_tested=5):
         if cap.isOpened():
             ret, frame = cap.read()
             if ret:
-                print(f"[SUCCESS] Camera index {index} is active. Resolution: {frame.shape[1]}x{frame.shape[0]}")
+                h, w, _ = frame.shape
+                print(f"[SUCCESS] Camera index {index} is active. Resolution: {w}x{h}")
                 available_indices.append(index)
             cap.release()
         else:
@@ -18,7 +19,11 @@ def test_available_cameras(max_tested=5):
 
 if __name__ == "__main__":
     indices = test_available_cameras()
-    if len(indices) < 2:
-        print("\nNote: Fewer than 2 cameras detected. If testing remotely without 2 cameras, use sample video files in data/ for Phase 2 testing.")
+    print("\n-------------------------------------------")
+    if len(indices) >= 2:
+        print(f"Dual setup detected! Assigned Camera Indices: {indices[:2]}")
+    elif len(indices) == 1:
+        print(f"Single camera detected at index {indices[0]}. (Use dummy video files in data/ for second stream testing)")
     else:
-        print(f"\nAssigned Camera Indices: {indices}")
+        print("No cameras detected. Ensure webcams are plugged in or use offline test videos.")
+    print("-------------------------------------------")
