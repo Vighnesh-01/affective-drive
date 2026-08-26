@@ -1,0 +1,15 @@
+# Python caches
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+.env
+
+# Raw test video data (keeps repo small)
+data/*.mp4
+data/*.avi
+
+# IDE files
+.vscode/
+.idea/
