@@ -10,7 +10,12 @@ class DriverStateTracker:
 
     def process(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
+        faces = self.face_cascade.detectMultiScale(
+            gray, 
+            scaleFactor=1.1, 
+            minNeighbors=3, 
+            minSize=(60, 60)
+        )
 
         driver_state = {
             "face_detected": False,

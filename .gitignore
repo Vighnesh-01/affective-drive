@@ -1,15 +1,36 @@
-# Python caches
-__pycache__/
-*.pyc
-
-# Virtual environment
+# Virtual Environments (Primary cause of 10,000+ files)
+.venv/
 venv/
-.env
+env/
+ENV/
 
-# Raw test video data (keeps repo small)
-data/*.mp4
-data/*.avi
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
 
-# IDE files
+# Large Datasets & Model Weights (Affect-Drive specific)
+*.pt
+*.pth
+*.onnx
+*.engine
+*.csv
+*.mp4
+*.avi
+*.jpg
+*.png
+
+# Data directory contents (keep folder structure, ignore contents)
+data/*
+!data/.gitkeep
+
+# VS Code & IDE Folders
 .vscode/
 .idea/
+*.swp
+
+# OS System Files
+.DS_Store
+Thumbs.db
