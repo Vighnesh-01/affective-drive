@@ -6,6 +6,8 @@ import cv2
 from src.perception.fusion_pipeline import AffectivePerceptionEngine
 from src.agent.llm_intervention import InterventionAgent
 from src.agent.tts_engine import TTSEngine
+from telegram_notifier import TelegramNotifier
+from src.agent.audio_alerts import AudioAlertEngine
 
 
 class DatasetActuator:
@@ -24,7 +26,7 @@ class DatasetActuator:
 
         # Create CSV with header
         os.makedirs(os.path.dirname(output_csv) or ".", exist_ok=True)
-        with open(self.output_csv, mode="w", newline="") as f:
+        with open(self.output_csv, mode="w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow([
                 "frame_id",
@@ -55,7 +57,7 @@ class DatasetActuator:
             driver_status = payload.get("driver_state", {}).get("driver_status", "")
             road_hazard = payload.get("road_state", {}).get("high_risk_hazard", "")
 
-        with open(self.output_csv, mode="a", newline="") as f:
+        with open(self.output_csv, mode="a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow([
                 self.signal_count,
@@ -111,6 +113,13 @@ def main():
     agent = InterventionAgent(mode="rule_based")
     actuator = DatasetActuator(output_csv="data/actuation_log.csv")
     tts = TTSEngine(voice_gender="female", rate=165, pitch=2)
+    notifier = TelegramNotifier(
+        bot_token="8602864132:AAEwK3rR4PMDcmdK67tnI7bngS-e0QKJigs",
+        chat_id="6167292056",
+        cooldown_seconds=6.0,
+        mock_mode=False
+    )
+    audio = AudioAlertEngine(volume=0.9)
 
     last_intervention_time = 0
     cooldown_seconds = 5.0
@@ -142,6 +151,13 @@ def main():
             if risk_level == "HIGH" and (last_risk_state == "LOW" or (current_time - last_intervention_time > cooldown_seconds)):
                 ai_text = agent._rule_based_response(payload)
                 agent.evaluate_and_respond_async(payload, callback=on_ai_response)
+                
+                # Instant Audio Alert (<5ms)
+                audio.play_for_payload(payload)
+
+                # Asynchronous Telegram Alert & Snapshot Dispatch
+                notifier.send_alert(payload, snapshot_frame=d_frame)
+
                 last_intervention_time = current_time
 
             last_risk_state = risk_level
@@ -178,6 +194,7 @@ def main():
         perception.stop()
         actuator.close()
         tts.stop()
+        audio.stop()
         cv2.destroyAllWindows()
 
 

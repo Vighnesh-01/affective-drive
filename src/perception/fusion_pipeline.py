@@ -68,7 +68,7 @@ class AffectivePerceptionEngine:
         # 2. Optimized Vision Models
         # Pre-filter target classes directly in YOLO: 0=Person, 2=Car, 3=Motorcycle, 5=Bus, 7=Truck
         self.target_classes = [0, 2, 3, 5, 7]
-        self.yolo = YOLO("yolov8n.pt")
+        self.yolo = YOLO("yolov8n_int8_openvino_model/yolov8n.xml")
 
         # Disable iris refinement for ~10ms/frame speedup; enable tracking confidence
         self.face_mesh = mp_face_mesh.FaceMesh(
@@ -101,12 +101,17 @@ class AffectivePerceptionEngine:
             print(f"[FUSION ENGINE WARNING] Could not load weights ({e}). Running with initialized model.")
         self.model.eval()
 
-        # 5. Temporal Feature Rolling Buffer
+        # 5. Temporal Feature Rolling Buffer & Spatial Gaze State
         self.feature_buffer = deque(maxlen=self.seq_len)
         self.label_map = {0: "NORMAL", 1: "ANXIOUS", 2: "DISTRACTED"}
+        self.face_lost_counter = 0
+        self.distraction_hold_frames = 0
 
     def _extract_driver_features(self, frame):
-        """Extracts 36-dimensional (12 landmarks x 3) driver face vector."""
+        """
+        Extracts 36-dimensional driver face vector and real-time head pose / gaze metrics.
+        Returns: (feats_list, face_detected, is_looking_away)
+        """
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.face_mesh.process(rgb_frame)
 
@@ -116,8 +121,31 @@ class AffectivePerceptionEngine:
             for idx in self.LANDMARK_IDS:
                 lm = landmarks[idx]
                 feats.extend([round(lm.x, 4), round(lm.y, 4), round(lm.z, 4)])
-            return feats
-        return [0.0] * (len(self.LANDMARK_IDS) * 3)
+
+            # Real-time spatial Head Pose & Gaze Asymmetry calculation:
+            # Landmark 33 (Left Eye), Landmark 263 (Right Eye), Landmark 1 (Nose Tip)
+            # Landmark 10 (Forehead Top), Landmark 152 (Chin Bottom)
+            p_left = landmarks[33]
+            p_right = landmarks[263]
+            p_nose = landmarks[1]
+            p_top = landmarks[10]
+            p_chin = landmarks[152]
+
+            d_left = abs(p_nose.x - p_left.x)
+            d_right = abs(p_right.x - p_nose.x)
+            yaw_ratio = d_left / (d_right + 1e-6)
+
+            face_height = abs(p_chin.y - p_top.y)
+            pitch_ratio = (p_nose.y - p_top.y) / (face_height + 1e-6)
+
+            # Looking far left, far right, or looking down (e.g. phone)
+            is_head_turned = (yaw_ratio < 0.40) or (yaw_ratio > 2.50)
+            is_looking_down = pitch_ratio > 0.68
+
+            is_looking_away = is_head_turned or is_looking_down
+            return feats, True, is_looking_away
+
+        return [0.0] * (len(self.LANDMARK_IDS) * 3), False, True
 
     def _extract_road_features(self, frame):
         """Extracts 5-dimensional road hazard vector via YOLOv8n."""
@@ -194,8 +222,13 @@ class AffectivePerceptionEngine:
 
         self.frame_counter += 1
 
-        # 1. Driver Feature Extraction (Runs every frame for rapid gaze/blink response)
-        d_feats = self._extract_driver_features(d_frame)
+        # 1. Driver Feature Extraction (Spatial Landmarks & Head Pose)
+        d_feats, face_detected, is_looking_away = self._extract_driver_features(d_frame)
+
+        if not face_detected:
+            self.face_lost_counter += 1
+        else:
+            self.face_lost_counter = 0
 
         # 2. Async Road Hazard Dispatch (Decoupled on every Nth frame)
         if self.frame_counter % self.skip_road_frames == 0:
@@ -215,7 +248,7 @@ class AffectivePerceptionEngine:
         self.feature_buffer.append(frame_vector)
 
         # 4. Temporal BiGRU Inference
-        driver_status = "INITIALIZING"
+        bigru_status = "NORMAL"
         if len(self.feature_buffer) == self.seq_len:
             tensor_input = torch.as_tensor(
                 [list(self.feature_buffer)],
@@ -226,9 +259,25 @@ class AffectivePerceptionEngine:
             with torch.inference_mode():
                 logits = self.model(tensor_input)
                 pred_idx = torch.argmax(logits, dim=1).item()
-                driver_status = self.label_map.get(pred_idx, "UNKNOWN")
+                bigru_status = self.label_map.get(pred_idx, "NORMAL")
 
-        # 5. Multimodal Risk Decision Fusion
+        # 5. Hybrid Spatial-Temporal Driver State Fusion:
+        # Distraction is triggered when:
+        # - Head turned left/right or looking down (is_looking_away == True)
+        # - Face disengaged / looking away for multiple frames (face_lost_counter >= 5)
+        # - BiGRU temporal network classifies sequence as DISTRACTED
+        if is_looking_away or (self.face_lost_counter >= 5) or (bigru_status == "DISTRACTED"):
+            driver_status = "DISTRACTED"
+            self.distraction_hold_frames = 10  # Hold for smooth UI visibility
+        elif self.distraction_hold_frames > 0:
+            self.distraction_hold_frames -= 1
+            driver_status = "DISTRACTED"
+        elif bigru_status == "ANXIOUS":
+            driver_status = "ANXIOUS"
+        else:
+            driver_status = "NORMAL"
+
+        # 6. Multimodal Risk Decision Fusion
         has_hazard = r_feats[4] == 1.0
         system_risk = "HIGH" if (driver_status in ["DISTRACTED", "ANXIOUS"] or has_hazard) else "LOW"
 
@@ -238,9 +287,19 @@ class AffectivePerceptionEngine:
             "system_risk_level": system_risk
         }
 
-        # Visual status on driver frame
-        color = (0, 0, 255) if system_risk == "HIGH" else (0, 255, 0)
-        cv2.putText(d_frame, f"BiGRU State: {driver_status}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        # 7. High-Visibility HUD Overlay on Driver Feed
+        if driver_status == "DISTRACTED":
+            cv2.rectangle(d_frame, (5, 5), (420, 42), (0, 0, 180), -1)
+            cv2.putText(d_frame, "BiGRU: DISTRACTED [Eyes Off Road]", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+        elif driver_status == "ANXIOUS":
+            cv2.rectangle(d_frame, (5, 5), (420, 42), (0, 140, 220), -1)
+            cv2.putText(d_frame, "BiGRU: ANXIOUS [Stress Detected]", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+        else:
+            cv2.rectangle(d_frame, (5, 5), (320, 42), (0, 80, 0), -1)
+            cv2.putText(d_frame, "BiGRU: NORMAL [Attentive]", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
 
         return d_frame, r_frame, state_payload
 

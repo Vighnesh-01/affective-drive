@@ -5,6 +5,9 @@ from src.perception.fusion_pipeline import AffectivePerceptionEngine
 from src.agent.llm_intervention import InterventionAgent
 from src.hardware.serial_controller import HardwareController
 from src.agent.tts_engine import TTSEngine
+from telegram_notifier import TelegramNotifier
+from src.agent.audio_alerts import AudioAlertEngine
+
 
 def main():
     print("=== Starting Affective-Drive AI Cockpit System ===")
@@ -20,6 +23,15 @@ def main():
     agent = InterventionAgent(mode="rule_based")
     actuator = HardwareController()
     tts = TTSEngine(voice_gender="female", rate=165, pitch=2)
+
+    # 2. Safety Interventions & Telemetry Bot
+    notifier = TelegramNotifier(
+        bot_token="8602864132:AAEwK3rR4PMDcmdK67tnI7bngS-e0QKJigs",
+        chat_id="6167292056",
+        cooldown_seconds=6.0,
+        mock_mode=False
+    )
+    audio = AudioAlertEngine(volume=0.9)
 
     last_intervention_time = 0
     cooldown_seconds = 5.0
@@ -53,6 +65,13 @@ def main():
             # 2. Async Intervention Trigger on High Risk
             if risk_level == "HIGH" and (last_risk_state == "LOW" or (current_time - last_intervention_time > cooldown_seconds)):
                 agent.evaluate_and_respond_async(payload, callback=on_ai_response)
+                
+                # Instant Audio Alert (<5ms)
+                audio.play_for_payload(payload)
+
+                # Asynchronous Telegram Alert & Snapshot Dispatch
+                notifier.send_alert(payload, snapshot_frame=d_frame)
+
                 last_intervention_time = current_time
 
             last_risk_state = risk_level
@@ -88,7 +107,9 @@ def main():
         perception.stop()
         actuator.close()
         tts.stop()
+        audio.stop()
         cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()
