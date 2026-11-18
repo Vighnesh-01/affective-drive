@@ -68,7 +68,7 @@ class AffectivePerceptionEngine:
         # 2. Optimized Vision Models
         # Pre-filter target classes directly in YOLO: 0=Person, 2=Car, 3=Motorcycle, 5=Bus, 7=Truck
         self.target_classes = [0, 2, 3, 5, 7]
-        self.yolo = YOLO("yolov8n_int8_openvino_model/yolov8n.xml")
+        self.yolo = YOLO("yolov8n.pt")
 
         # Disable iris refinement for ~10ms/frame speedup; enable tracking confidence
         self.face_mesh = mp_face_mesh.FaceMesh(
@@ -131,16 +131,21 @@ class AffectivePerceptionEngine:
             p_top = landmarks[10]
             p_chin = landmarks[152]
 
-            d_left = abs(p_nose.x - p_left.x)
-            d_right = abs(p_right.x - p_nose.x)
-            yaw_ratio = d_left / (d_right + 1e-6)
+            # Normalized head pose using eye-width as reference scale
+            eye_center_x = (p_left.x + p_right.x) / 2.0
+            eye_center_y = (p_left.y + p_right.y) / 2.0
+            eye_width = abs(p_right.x - p_left.x) + 1e-6
+            face_height = abs(p_chin.y - p_top.y) + 1e-6
 
-            face_height = abs(p_chin.y - p_top.y)
-            pitch_ratio = (p_nose.y - p_top.y) / (face_height + 1e-6)
+            # Normalized yaw: ~0 = centered, positive = looking right
+            norm_yaw = (p_nose.x - eye_center_x) / eye_width
+            # Normalized pitch: nose position relative to eye line
+            norm_pitch = (p_nose.y - eye_center_y) / face_height
 
-            # Looking far left, far right, or looking down (e.g. phone)
-            is_head_turned = (yaw_ratio < 0.40) or (yaw_ratio > 2.50)
-            is_looking_down = pitch_ratio > 0.68
+            # Distraction thresholds (calibrated from real webcam data)
+            # Normal forward-facing yaw ~0.17-0.48, pitch ~0.21-0.25
+            is_head_turned = abs(norm_yaw) > 0.55
+            is_looking_down = norm_pitch > 0.42
 
             is_looking_away = is_head_turned or is_looking_down
             return feats, True, is_looking_away
@@ -261,24 +266,35 @@ class AffectivePerceptionEngine:
                 pred_idx = torch.argmax(logits, dim=1).item()
                 bigru_status = self.label_map.get(pred_idx, "NORMAL")
 
-        # 5. Hybrid Spatial-Temporal Driver State Fusion:
-        # Distraction is triggered when:
-        # - Head turned left/right or looking down (is_looking_away == True)
-        # - Face disengaged / looking away for multiple frames (face_lost_counter >= 5)
-        # - BiGRU temporal network classifies sequence as DISTRACTED
-        if is_looking_away or (self.face_lost_counter >= 5) or (bigru_status == "DISTRACTED"):
+        # 5. Multimodal Context & Temporal Facial Stability Analysis
+        has_hazard = r_feats[4] == 1.0
+
+        is_agitated = False
+        if len(self.feature_buffer) == self.seq_len:
+            buf_arr = np.array(self.feature_buffer)
+            face_frames = buf_arr[:, :36]
+            valid_mask = np.any(face_frames != 0, axis=1)
+            if np.sum(valid_mask) >= 15:
+                # Temporal jitter: mean standard deviation per landmark coordinate across time
+                temporal_jitter = float(np.std(face_frames[valid_mask], axis=0).mean())
+                is_agitated = temporal_jitter > 0.015
+
+        # 6. Hybrid Spatial-Temporal Driver State Fusion:
+        # - DISTRACTED: Head turned left/right, looking down at phone, or face lost (>= 15 frames)
+        # - ANXIOUS: Forward-facing but under defensive stress (close hazard or facial agitation)
+        # - NORMAL: Attentive, forward-facing driver with steady gaze and clear road
+        if is_looking_away or (self.face_lost_counter >= 15):
             driver_status = "DISTRACTED"
-            self.distraction_hold_frames = 10  # Hold for smooth UI visibility
+            self.distraction_hold_frames = 5  # Hold for smooth UI visibility
         elif self.distraction_hold_frames > 0:
             self.distraction_hold_frames -= 1
             driver_status = "DISTRACTED"
-        elif bigru_status == "ANXIOUS":
+        elif has_hazard or is_agitated:
             driver_status = "ANXIOUS"
         else:
             driver_status = "NORMAL"
 
-        # 6. Multimodal Risk Decision Fusion
-        has_hazard = r_feats[4] == 1.0
+        # 7. Multimodal Risk Decision Fusion
         system_risk = "HIGH" if (driver_status in ["DISTRACTED", "ANXIOUS"] or has_hazard) else "LOW"
 
         state_payload = {
