@@ -1,4 +1,9 @@
 # scripts/export_bigru_openvino.py
+import os, sys
+# Ensure the project root (parent of 'scripts/') is on sys.path so
+# 'from src.…' imports work regardless of the working directory.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import torch
 from src.model.bigru_model import AffectiveBiGRU
 

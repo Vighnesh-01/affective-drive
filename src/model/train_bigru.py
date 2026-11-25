@@ -1,3 +1,8 @@
+import os, sys
+# Ensure the project root (parent of 'src/') is on sys.path so
+# 'from src.…' imports work regardless of the working directory.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
 import torch
 import torch.nn as nn
 import torch.optim as optim

@@ -110,7 +110,9 @@ plt.close()
 rep_path = os.path.join(RESULTS_DIR, "full_evaluation_report.csv")
 if os.path.exists(rep_path):
     rep = pd.read_csv(rep_path)
-    rep.loc[rep["Metric"] == "Peak Active RSS (MB)", "Value"] = peak_mb
-    rep.loc[rep["Metric"] == "Peak % of System RAM", "Value"] = pct
+    # Cast the Value column to object dtype so it can hold both numbers and strings
+    rep["Value"] = rep["Value"].astype(object)
+    rep.loc[rep["Metric"] == "Peak RSS (MB)", "Value"] = peak_mb
+    rep.loc[rep["Metric"] == "Process % System RAM", "Value"] = pct
     rep.to_csv(rep_path, index=False)
 print("  [OK] Clean RAM profile & full_evaluation_report.csv updated.")

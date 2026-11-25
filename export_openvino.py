@@ -8,7 +8,7 @@ exported_path = model.export(
     format="openvino",
     quantize="int8",          # Use 'int8' or 8 for INT8 quantization
     imgsz=640,
-    data="path/to/data.yaml"  # Path to your dataset's data.yaml for INT8 calibration
+    data="coco8.yaml"  # Ultralytics built-in calibration dataset (matches original training)
 )
 
 print(f"\n✅ Model converted successfully! Saved at: {exported_path}")
