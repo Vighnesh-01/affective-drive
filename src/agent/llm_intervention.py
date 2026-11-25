@@ -32,7 +32,7 @@ class InterventionAgent:
     def __init__(
         self,
         mode="contextual",
-        model_name="gemini-2.0-flash",
+        model_name="gemini-2.5-flash",
         gemini_api_key=None,
         ollama_url="http://localhost:11434/api/generate",
     ):
@@ -43,10 +43,14 @@ class InterventionAgent:
         self._recent: list[str] = []
         self._max_recent = 8
 
-        # Optional Gemini initialisation
+        # Optional Gemini initialisation ("auto" uses Gemini if API key is present, else contextual)
         self._gemini_client = None
-        if mode == "gemini":
+        if mode in ("gemini", "auto"):
             self._init_gemini(gemini_api_key)
+            if self._gemini_client is not None:
+                self.mode = "gemini"
+            elif mode == "auto":
+                self.mode = "contextual"
 
         # ── Response bank: (driver_status, severity) → list[str] ──────────
         self._bank = {
@@ -141,6 +145,30 @@ class InterventionAgent:
             "none":     "",
         }
 
+        # Cabin behavior specific alerts
+        self._behavior_bank = {
+            "SEATBELT_OFF": [
+                "🚨 Safety check: Seatbelt unfastened! Please buckle your seatbelt immediately.",
+                "⚠️ Seatbelt not detected — fasten your seatbelt before continuing.",
+            ],
+            "PHONE USE": [
+                "🚨 Phone distraction detected! Put the phone away and keep both hands on the wheel.",
+                "🚨 Unsafe phone usage — keep your eyes on the road, not your screen.",
+            ],
+            "EATING/DRINKING": [
+                "⚠️ Eating or drinking detected while driving. Keep both hands free for steering control.",
+                "⚠️ Food or drink distraction — pull over safely before eating or drinking.",
+            ],
+            "YAWNING": [
+                "🚨 Frequent yawning detected! Fatigue warning — please consider taking a rest break.",
+                "⚠️ Signs of driver fatigue (yawning). Stay alert or stop for fresh air.",
+            ],
+            "TALKING": [
+                "💬 Active conversation detected — keep your eyes scanning the road ahead.",
+                "💬 Stay focused while speaking — maintain safe following distance.",
+            ],
+        }
+
     # ── Gemini setup ──────────────────────────────────────────────────────
     def _init_gemini(self, api_key=None):
         try:
@@ -161,18 +189,32 @@ class InterventionAgent:
         ds = payload.get("driver_state", {})
         driver_status = ds.get("driver_status", "NORMAL")
         emotion       = ds.get("emotion", "neutral")
+        seatbelt      = ds.get("seatbelt", "N/A")
+        activity      = ds.get("activity", "ATTENTIVE")
         hazard        = payload.get("road_state", {}).get("high_risk_hazard", "Clear")
         risk          = payload.get("system_risk_level", "LOW")
 
         severity = "HIGH" if (risk == "HIGH" or "Close" in str(hazard)) else "LOW"
-        pool = (self._bank.get((driver_status, severity))
-                or self._bank.get((driver_status, "LOW"))
-                or self._bank.get(("NORMAL", "LOW")))
+
+        # Prioritize specific cabin behavior warnings when detected (unless NO FACE or CRITICAL hazard)
+        pool = None
+        if driver_status != "NO FACE" and not (severity == "HIGH" and "Close" in str(hazard)):
+            if activity in ("PHONE USE", "EATING/DRINKING", "YAWNING"):
+                pool = self._behavior_bank.get(activity)
+            elif seatbelt == "OFF":
+                pool = self._behavior_bank.get("SEATBELT_OFF")
+            elif activity == "TALKING" and driver_status == "NORMAL":
+                pool = self._behavior_bank.get("TALKING")
+
+        if not pool:
+            pool = (self._bank.get((driver_status, severity))
+                    or self._bank.get((driver_status, "LOW"))
+                    or self._bank.get(("NORMAL", "LOW")))
 
         available = [r for r in pool if r not in self._recent] or pool
         response  = random.choice(available)
 
-        if severity == "HIGH":
+        if severity == "HIGH" and activity not in ("PHONE USE", "EATING/DRINKING"):
             tip = self._emotion_tips.get(emotion, "")
             if tip and tip not in response:
                 response += tip
@@ -191,11 +233,12 @@ class InterventionAgent:
         prompt = (
             f"You are an AI co-pilot safety system in a moving vehicle. "
             f"Driver status: '{ds.get('driver_status')}', facial emotion: "
-            f"'{ds.get('emotion')}', road hazard: "
+            f"'{ds.get('emotion')}', cabin activity: '{ds.get('activity', 'ATTENTIVE')}', "
+            f"seatbelt: '{ds.get('seatbelt', 'N/A')}', road hazard: "
             f"'{payload.get('road_state',{}).get('high_risk_hazard')}', "
             f"risk: '{payload.get('system_risk_level')}'. "
-            f"Give ONE concise, empathetic safety message (1–2 sentences). "
-            f"Be direct and actionable.  No markdown."
+            f"Give ONE concise, empathetic safety message (1-2 sentences). "
+            f"Address the specific driver emotion/behavior first if unsafe. No markdown."
         )
         try:
             resp = self._gemini_client.models.generate_content(

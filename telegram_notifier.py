@@ -56,18 +56,31 @@ class TelegramNotifier:
 
     def _build_html_message(self, payload: dict) -> str:
         """Constructs a clean HTML alert message that never breaks on special chars."""
-        driver_status = payload.get("driver_state", {}).get("driver_status", "UNKNOWN")
+        ds = payload.get("driver_state", {})
+        driver_status = ds.get("driver_status", "UNKNOWN")
+        emotion = str(ds.get("emotion", "neutral")).upper()
+        activity = ds.get("activity", "ATTENTIVE")
+        seatbelt = ds.get("seatbelt", "N/A")
         road_hazard = payload.get("road_state", {}).get("high_risk_hazard", "Unknown")
         risk_level = payload.get("system_risk_level", "HIGH")
         timestamp = time.strftime("%d %b %Y | %H:%M:%S")
 
-        status_emoji = "👁️" if driver_status == "DISTRACTED" else ("😰" if driver_status == "ANXIOUS" else "✅")
+        emoji_map = {
+            "DISTRACTED": "👁️",
+            "ANXIOUS": "😰",
+            "STRESSED": "😔",
+            "DROWSY": "😴",
+            "NO FACE": "📷",
+            "NORMAL": "✅",
+        }
+        status_emoji = emoji_map.get(driver_status, "⚠️")
         hazard_emoji = "🚨" if ("Close" in road_hazard or "Vehicle" in road_hazard or "Pothole" in road_hazard) else "⚠️"
 
         html = (
             f"<b>🚗 Affect-Drive Safety Alert</b>\n"
             f"────────────────────\n"
-            f"{status_emoji} <b>Driver State:</b> <code>{driver_status}</code>\n"
+            f"{status_emoji} <b>Driver State:</b> <code>{driver_status}</code> ({emotion})\n"
+            f"🪑 <b>Seatbelt:</b> <code>{seatbelt}</code> | <b>Activity:</b> <code>{activity}</code>\n"
             f"{hazard_emoji} <b>Road Hazard:</b> <code>{road_hazard}</code>\n"
             f"🔴 <b>System Risk:</b> <code>{risk_level}</code>\n"
             f"🕐 <b>Time:</b> {timestamp}\n"
